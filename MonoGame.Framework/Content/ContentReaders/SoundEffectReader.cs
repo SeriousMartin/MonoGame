@@ -100,6 +100,8 @@ namespace Microsoft.Xna.Framework.Content
             //var avgBPS = (int)BitConverter.ToUInt16(header, 8);
             var blockAlignment = (int)BitConverter.ToUInt16(header, 12);
             //var bps = (int)BitConverter.ToUInt16(header, 14);
+            // used to be calculated based on bps. This works for ADPCM, too
+            TimeSpan duration = TimeSpan.FromSeconds((float)loopLength / sampleRate);
 
             SharpDX.Multimedia.WaveFormat waveFormat;
             if (format == 1)
