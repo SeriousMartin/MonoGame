@@ -42,17 +42,54 @@ namespace Microsoft.Xna.Framework.Audio
             PlatformInitialize(buffer, sampleRate, channels);
         }
 
-        /// <param name="buffer">Buffer containing PCM wave data.</param>
+        /// <param name="buffer">Buffer containing PCM or ADPCM wave data.</param>
         /// <param name="offset">Offset, in bytes, to the starting position of the audio data.</param>
         /// <param name="count">Amount, in bytes, of audio data.</param>
+        /// <param name="duration">Duration of the sound.</param>
         /// <param name="sampleRate">Sample rate, in Hertz (Hz)</param>
         /// <param name="channels">Number of channels (mono or stereo).</param>
         /// <param name="loopStart">The position, in samples, where the audio should begin looping.</param>
         /// <param name="loopLength">The duration, in samples, that audio should loop over.</param>
         /// <remarks>Use SoundEffect.GetSampleDuration() to convert time to samples.</remarks>
-        public SoundEffect(byte[] buffer, int offset, int count, int sampleRate, AudioChannels channels, int loopStart, int loopLength)
+        public SoundEffect(byte[] buffer, int offset, int count, TimeSpan duration, int sampleRate, AudioChannels channels, int loopStart, int loopLength)
         {
-            _duration = GetSampleDuration(count, sampleRate, channels);
+            if (sampleRate < 8000 || sampleRate > 48000)
+                throw new ArgumentOutOfRangeException("sampleRate");
+            if ((int)channels != 1 && (int)channels != 2)
+                throw new ArgumentOutOfRangeException("channels");
+
+            if (buffer == null || buffer.Length == 0)
+                throw new ArgumentException("Ensure that the buffer length is non-zero.", "buffer");
+            var blockAlign = (int)channels * 2;
+            if ((buffer.Length % blockAlign) != 0)
+                throw new ArgumentException("Ensure that the buffer meets the block alignment requirements for the number of channels.", "buffer");
+
+            if (count <= 0)
+                throw new ArgumentException("Ensure that the count is greater than zero.", "count");
+            if ((count % blockAlign) != 0)
+                throw new ArgumentException("Ensure that the count meets the block alignment requirements for the number of channels.", "count");
+
+            if (offset < 0)
+                throw new ArgumentException("The offset cannot be negative.", "offset");
+            if (((ulong)count + (ulong)offset) > (ulong)buffer.Length)
+                throw new ArgumentException("Ensure that the offset+count region lines within the buffer.", "offset");
+
+            var totalSamples = (int)Math.Floor(duration.TotalSeconds * sampleRate);
+
+            if (loopStart < 0)
+                throw new ArgumentException("The loopStart cannot be negative.", "loopStart");
+            if (loopStart > totalSamples)
+                throw new ArgumentException("The loopStart cannot be greater than the total number of samples.", "loopStart");
+
+            if (loopLength == 0)
+                loopLength = totalSamples - loopStart;
+
+            if (loopLength < 0)
+                throw new ArgumentException("The loopLength cannot be negative.", "loopLength");
+            if (((ulong)loopStart + (ulong)loopLength) > (ulong)totalSamples)
+                throw new ArgumentException("Ensure that the loopStart+loopLength region lies within the sample range.", "loopLength");
+
+            _duration = duration;
 
             PlatformInitialize(buffer, offset, count, sampleRate, channels, loopStart, loopLength);
         }
