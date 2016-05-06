@@ -90,7 +90,7 @@ namespace Microsoft.Xna.Framework.Content
 			byte[] data = input.ReadBytes(input.ReadInt32());
 			int loopStart = input.ReadInt32();
 			int loopLength = input.ReadInt32();
-			input.ReadInt32();
+			int test = input.ReadInt32();
 
 #if DIRECTX            
             var count = data.Length;
@@ -100,6 +100,8 @@ namespace Microsoft.Xna.Framework.Content
             //var avgBPS = (int)BitConverter.ToUInt16(header, 8);
             var blockAlignment = (int)BitConverter.ToUInt16(header, 12);
             //var bps = (int)BitConverter.ToUInt16(header, 14);
+            // used to be calculated based on bps. This works for ADPCM, too
+            int sampleCount = loopLength;
 
             SharpDX.Multimedia.WaveFormat waveFormat;
             if (format == 1)
@@ -109,7 +111,7 @@ namespace Microsoft.Xna.Framework.Content
             else
                 throw new NotSupportedException("Unsupported wave format!");
 
-            return new SoundEffect(data, 0, count, sampleRate, (AudioChannels)channels, loopStart, loopLength)
+            return new SoundEffect(data, 0, count, sampleCount, sampleRate, (AudioChannels)channels, loopStart, loopLength)
             {
                 _format = waveFormat,
                 Name = input.AssetName,

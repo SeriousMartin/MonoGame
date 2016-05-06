@@ -47,12 +47,7 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Processors
                     if ((context.TargetPlatform == TargetPlatform.iOS) || (context.TargetPlatform == TargetPlatform.MacOSX))
                         targetFormat = ConversionFormat.ImaAdpcm;
                     else
-                    {
-                        // TODO: For some reason this doesn't work on Windows
-                        // so we fallback to plain PCM and depend on the 
-                        // bitrate reduction only.
-                        //targetFormat = ConversionFormat.Adpcm;
-                    }
+                        targetFormat = ConversionFormat.Adpcm;
                     break;
             }
 
