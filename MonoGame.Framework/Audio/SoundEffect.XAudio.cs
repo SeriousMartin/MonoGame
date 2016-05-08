@@ -137,10 +137,10 @@ namespace Microsoft.Xna.Framework.Audio
 
         private void PlatformInitialize(byte[] buffer, int sampleRate, AudioChannels channels)
         {
+            var sampleLength = (int)(buffer.Length / ((int)channels * 16f / 8f));
             CreateBuffers(  new WaveFormat(sampleRate, (int)channels),
                             DataStream.Create(buffer, true, false),
-                            0, 
-                            buffer.Length);
+                            0, sampleLength);
         }
 
         private void PlatformInitialize(byte[] buffer, int offset, int count, int sampleRate, AudioChannels channels, int loopStart, int loopLength)

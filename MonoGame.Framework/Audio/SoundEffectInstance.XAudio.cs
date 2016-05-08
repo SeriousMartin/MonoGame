@@ -47,13 +47,25 @@ namespace Microsoft.Xna.Framework.Audio
             var dstChannelCount = SoundEffect.MasterVoice.VoiceDetails.InputChannelCount;
 
             // XNA supports distance attenuation and doppler.            
-            var dpsSettings = SoundEffect.Device3D.Calculate(l, e, CalculateFlags.Matrix | CalculateFlags.Doppler, srcChannelCount, dstChannelCount);
+            var dspSettings = SoundEffect.Device3D.Calculate(l, e, CalculateFlags.Matrix | CalculateFlags.Doppler, srcChannelCount, dstChannelCount);
+
+            if (_isXAct)
+            {
+                // xact sound volume is "manually" set based on rpc presets
+                // TODO would be nice to optionally use the Device3DCalculate results instead
+                float coefficentSum = 0;
+                for (int i = 0; i < dspSettings.MatrixCoefficients.Length; i++)
+                    coefficentSum += dspSettings.MatrixCoefficients[i];
+                float coefficientFactor = 1 / coefficentSum;
+                for (int i = 0; i < dspSettings.MatrixCoefficients.Length; i++)
+                    dspSettings.MatrixCoefficients[i] *= coefficientFactor;
+            }
 
             // Apply Volume settings (from distance attenuation) ...
-            _voice.SetOutputMatrix(SoundEffect.MasterVoice, srcChannelCount, dstChannelCount, dpsSettings.MatrixCoefficients, 0);
+            _voice.SetOutputMatrix(SoundEffect.MasterVoice, srcChannelCount, dstChannelCount, dspSettings.MatrixCoefficients, 0);
 
             // Apply Pitch settings (from doppler) ...
-            _voice.SetFrequencyRatio(dpsSettings.DopplerFactor);
+            _voice.SetFrequencyRatio(dspSettings.DopplerFactor);
         }
 
         private void PlatformPause()

@@ -1,220 +1,953 @@
-// MonoGame - Copyright (C) The MonoGame Team
-// This file is subject to the terms and conditions defined in
-// file 'LICENSE.txt', which is part of this source code package.
+#region License
+/* FNA - XNA4 Reimplementation for Desktop Platforms
+ * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ *
+ * Released under the Microsoft Public License.
+ * See LICENSE for details.
+ */
+#endregion
 
+#region Using Statements
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+#endregion
 
 namespace Microsoft.Xna.Framework.Audio
 {
-    /// <summary>Manages the playback of a sound or set of sounds.</summary>
-    /// <remarks>
-    /// <para>Cues are comprised of one or more sounds.</para>
-    /// <para>Cues also define specific properties such as pitch or volume.</para>
-    /// <para>Cues are referenced through SoundBank objects.</para>
-    /// </remarks>
-	public class Cue : IDisposable
-	{
-        private readonly AudioEngine _engine;
-        private readonly string _name;
-        private readonly XactSound[] _sounds;
-		private readonly float[] _probs;
+    // http://msdn.microsoft.com/en-us/library/microsoft.xna.framework.audio.cue.aspx
+    public sealed class Cue : IDisposable
+    {
+        #region Public Properties
 
-        private XactSound _curSound;
-        private float _volume = 1.0f;
+        public bool IsCreated
+        {
+            get;
+            private set;
+        }
 
-        /// <summary>Indicates whether or not the cue is currently paused.</summary>
-        /// <remarks>IsPlaying and IsPaused both return true if a cue is paused while playing.</remarks>
-		public bool IsPaused
-		{
-			get 
-            {
-				if (_curSound != null)
-					return _curSound.IsPaused;
+        public bool IsDisposed
+        {
+            get;
+            private set;
+        }
 
-				return false;
-			}
-		}
-
-        /// <summary>Indicates whether or not the cue is currently playing.</summary>
-        /// <remarks>IsPlaying and IsPaused both return true if a cue is paused while playing.</remarks>
-		public bool IsPlaying
-		{
-			get 
-            {
-				if (_curSound != null)
-					return _curSound.Playing;
-
-				return false;
-			}
-		}
-
-        /// <summary>Indicates whether or not the cue is currently stopped.</summary>
-		public bool IsStopped
-		{
-			get 
-            {
-				if (_curSound != null)
-                    return _curSound.Stopped;
-
-				return true;
-			}
-		}
-
-        public bool IsStopping
+        public bool IsPaused
         {
             get
             {
-                // TODO: Implement me!
-                return false;
+                return (!INTERNAL_timer.IsRunning &&
+                        INTERNAL_timer.ElapsedTicks > 0);
             }
         }
 
-        public bool IsPreparing
+        public bool IsPlaying
         {
             get
             {
-                // TODO: Implement me!
-                return false;
+                return (INTERNAL_timer.IsRunning ||
+                        INTERNAL_timer.ElapsedTicks > 0);
             }
         }
 
         public bool IsPrepared
         {
+            get;
+            private set;
+        }
+
+        public bool IsPreparing
+        {
+            get;
+            private set;
+        }
+
+        public bool IsStopped
+        {
             get
             {
-                // TODO: Implement me!
-                return false;
+                return !IsPlaying;
             }
         }
 
-        /// <summary>Gets the friendly name of the cue.</summary>
-        /// <remarks>The friendly name is a value set from the designer.</remarks>
-		public string Name
-		{
-			get { return _name; }
-		}
-		
-		internal Cue(AudioEngine engine, string cuename, XactSound sound)
-		{
-			_engine = engine;
-			_name = cuename;
-			_sounds = new XactSound[1];
-			_sounds[0] = sound;
-			_probs = new float[1];
-			_probs[0] = 1.0f;
-		}
-		
-		internal Cue(AudioEngine engine, string cuename, XactSound[] sounds, float[] probs)
-		{
-            _engine = engine;
-			_name = cuename;
-			_sounds = sounds;
-			_probs = probs;
-		}
+        public bool IsStopping
+        {
+            get
+            {
+                return INTERNAL_fadeMode == FadeMode.FadeOut;
+            }
+        }
 
-        /// <summary>Pauses playback.</summary>
-		public void Pause()
-		{
-			if (_curSound != null)
-				_curSound.Pause();
-		}
+        public string Name
+        {
+            get;
+            private set;
+        }
 
-        /// <summary>Requests playback of a prepared or preparing Cue.</summary>
-        /// <remarks>Calling Play when the Cue already is playing can result in an InvalidOperationException.</remarks>
-		public void Play()
-		{
-            if (!_engine._activeCues.Contains(this))
-                _engine._activeCues.Add(this);
-			
-			//TODO: Probabilities
-            var index = XactHelpers.Random.Next(_sounds.Length);
-            _curSound = _sounds[index];
-			
-			_curSound.SetCueVolume(_volume);
-			_curSound.Play();
-		}
+        #endregion
 
-        /// <summary>Resumes playback of a paused Cue.</summary>
-		public void Resume()
-		{
-			if (_curSound != null)
-				_curSound.Resume();
-		}
+        #region Internal Properties
 
-        /// <summary>Stops playback of a Cue.</summary>
-        /// <param name="options">Specifies if the sound should play any pending release phases or transitions before stopping.</param>
-		public void Stop(AudioStopOptions options)
-		{
-            _engine._activeCues.Remove(this);
-			
-			if (_curSound != null)
-                _curSound.Stop(options);
-		}
-		
+        private ulong elapsedFrames;
+        internal bool JustStarted
+        {
+            get
+            {
+                return elapsedFrames < 2;
+            }
+        }
+
+        #endregion
+
+        #region Private Variables
+
+        private AudioEngine INTERNAL_baseEngine;
+
+        // Cue information parsed from the SoundBank
+        private CueData INTERNAL_data;
+
+        // Current sound and its events
+        private XACTSound INTERNAL_activeSound;
+        private List<XACTEvent> INTERNAL_eventList;
+        private List<bool> INTERNAL_eventPlayed;
+        private Dictionary<XACTEvent, int> INTERNAL_eventLoops;
+        private Dictionary<SoundEffectInstance, XACTEvent> INTERNAL_waveEventSounds;
+
+        // Used for event timestamps
+        private Stopwatch INTERNAL_timer;
+
+        // Sound list
+        private List<SoundEffectInstance> INTERNAL_instancePool;
+        private List<float> INTERNAL_instanceVolumes;
+        private List<float> INTERNAL_instancePitches;
+
+        // RPC data list
+        private List<float> INTERNAL_rpcTrackVolumes;
+        private List<float> INTERNAL_rpcTrackPitches;
+
+        // Events can control volume/pitch as well!
+        private float eventVolume;
+        private float eventPitch;
+
+        // User-controlled sounds require a bit more trickery.
+        private bool INTERNAL_userControlledPlaying;
+        private float INTERNAL_controlledValue;
+
+        // 3D audio variables
+        private bool INTERNAL_isPositional;
+        private AudioListener INTERNAL_listener;
+        private AudioEmitter INTERNAL_emitter;
+
+        // XACT instance variables
+        private List<Variable> INTERNAL_variables;
+
+        // Category managing this Cue, and whether or not it's user-managed
+        private AudioCategory INTERNAL_category;
+        private bool INTERNAL_isManaged;
+
+        // Fading
+        private enum FadeMode
+        {
+            None,
+            FadeOut,
+            FadeIn
+        }
+        private long INTERNAL_fadeStart;
+        private long INTERNAL_fadeEnd;
+        private FadeMode INTERNAL_fadeMode = FadeMode.None;
+
+        #endregion
+
+        #region Private Static Random Number Generator
+
+        private static Random random = new Random();
+
+        #endregion
+
+        #region Disposing Event
+
+        public event EventHandler<EventArgs> Disposing;
+
+        #endregion
+
+        #region Internal Constructor
+
+        internal Cue(
+            AudioEngine audioEngine,
+            List<string> waveBankNames,
+            string name,
+            CueData data,
+            bool managed
+        )
+        {
+            INTERNAL_baseEngine = audioEngine;
+
+            Name = name;
+
+            INTERNAL_data = data;
+            foreach (XACTSound curSound in data.Sounds)
+            {
+                if (!curSound.HasLoadedTracks)
+                {
+                    curSound.LoadTracks(
+                        INTERNAL_baseEngine,
+                        waveBankNames
+                    );
+                }
+            }
+
+            INTERNAL_isManaged = managed;
+
+            INTERNAL_category = INTERNAL_baseEngine.INTERNAL_initCue(
+                this,
+                data.Category
+            );
+
+            eventVolume = 1.0f;
+            eventPitch = 0.0f;
+
+            INTERNAL_userControlledPlaying = false;
+            INTERNAL_isPositional = false;
+
+            INTERNAL_eventList = new List<XACTEvent>();
+            INTERNAL_eventPlayed = new List<bool>();
+            INTERNAL_eventLoops = new Dictionary<XACTEvent, int>();
+            INTERNAL_waveEventSounds = new Dictionary<SoundEffectInstance, XACTEvent>();
+
+            INTERNAL_timer = new Stopwatch();
+
+            INTERNAL_instancePool = new List<SoundEffectInstance>();
+            INTERNAL_instanceVolumes = new List<float>();
+            INTERNAL_instancePitches = new List<float>();
+
+            INTERNAL_rpcTrackVolumes = new List<float>();
+            INTERNAL_rpcTrackPitches = new List<float>();
+        }
+
+        #endregion
+
+        #region Destructor
+
+        ~Cue()
+        {
+            Dispose();
+        }
+
+        #endregion
+
+        #region Public Dispose Method
+
+        public void Dispose()
+        {
+            if (!IsDisposed)
+            {
+                if (Disposing != null)
+                {
+                    Disposing.Invoke(this, null);
+                }
+                if (INTERNAL_instancePool != null)
+                {
+                    foreach (SoundEffectInstance sfi in INTERNAL_instancePool)
+                    {
+                        sfi.Dispose();
+                    }
+                    INTERNAL_instancePool.Clear();
+                    INTERNAL_instanceVolumes.Clear();
+                    INTERNAL_instancePitches.Clear();
+                    INTERNAL_rpcTrackVolumes.Clear();
+                    INTERNAL_rpcTrackPitches.Clear();
+                    INTERNAL_timer.Stop();
+                }
+                INTERNAL_category.INTERNAL_removeActiveCue(this);
+                IsDisposed = true;
+            }
+        }
+
+        #endregion
+
+        #region Public Methods
+
+        public void Apply3D(AudioListener listener, AudioEmitter emitter)
+        {
+            if (IsPlaying && !INTERNAL_isPositional)
+            {
+                throw new InvalidOperationException("Apply3D call after Play!");
+            }
+            if (listener == null)
+            {
+                throw new ArgumentNullException("listener");
+            }
+            if (emitter == null)
+            {
+                throw new ArgumentNullException("emitter");
+            }
+            INTERNAL_listener = listener;
+            INTERNAL_emitter = emitter;
+            SetVariable(
+                "Distance",
+                Vector3.Distance(
+                    INTERNAL_emitter.Position,
+                    INTERNAL_listener.Position
+                )
+            );
+            // TODO: DopplerPitchScaler, OrientationAngle
+            INTERNAL_isPositional = true;
+        }
+
+        public float GetVariable(string name)
+        {
+            if (String.IsNullOrEmpty(name))
+            {
+                throw new ArgumentNullException("name");
+            }
+            foreach (Variable curVar in INTERNAL_variables)
+            {
+                if (name.Equals(curVar.Name))
+                {
+                    return curVar.GetValue();
+                }
+            }
+            if (name.Equals("NumCueInstances"))
+            {
+                return INTERNAL_category.INTERNAL_cueInstanceCount(Name);
+            }
+            throw new ArgumentException("Instance variable not found!");
+        }
+
+        public void Pause()
+        {
+            if (IsPlaying)
+            {
+                INTERNAL_timer.Stop();
+                foreach (SoundEffectInstance sfi in INTERNAL_instancePool)
+                {
+                    sfi.Pause();
+                }
+            }
+        }
+
+        public void Play()
+        {
+            if (IsPlaying)
+            {
+                throw new InvalidOperationException("Cue already playing!");
+            }
+
+            if (INTERNAL_category.INTERNAL_cueInstanceCount(Name) >= INTERNAL_data.InstanceLimit)
+            {
+                if (INTERNAL_data.MaxCueBehavior == MaxInstanceBehavior.Fail)
+                {
+                    return; // Just ignore us...
+                }
+                else if (INTERNAL_data.MaxCueBehavior == MaxInstanceBehavior.Queue)
+                {
+                    throw new NotImplementedException("Cue Queueing not handled!");
+                }
+                else if (INTERNAL_data.MaxCueBehavior == MaxInstanceBehavior.ReplaceOldest)
+                {
+                    if (!INTERNAL_category.INTERNAL_removeOldestCue(Name))
+                    {
+                        return; // Just ignore us...
+                    }
+                }
+                else if (INTERNAL_data.MaxCueBehavior == MaxInstanceBehavior.ReplaceQuietest)
+                {
+                    if (!INTERNAL_category.INTERNAL_removeQuietestCue(Name))
+                    {
+                        return; // Just ignore us...
+                    }
+                }
+                else if (INTERNAL_data.MaxCueBehavior == MaxInstanceBehavior.ReplaceLowestPriority)
+                {
+                    // FIXME: Priority?
+                    if (!INTERNAL_category.INTERNAL_removeOldestCue(Name))
+                    {
+                        return; // Just ignore us...
+                    }
+                }
+            }
+
+            if (!INTERNAL_category.INTERNAL_addCue(this))
+            {
+                return;
+            }
+
+            elapsedFrames = 0;
+            INTERNAL_timer.Start();
+            if (INTERNAL_data.FadeInMS > 0)
+            {
+                INTERNAL_startFadeIn(INTERNAL_data.FadeInMS);
+            }
+
+            if (!INTERNAL_calculateNextSound())
+            {
+                return;
+            }
+
+            INTERNAL_activeSound.GatherEvents(INTERNAL_eventList);
+            foreach (XACTEvent evt in INTERNAL_eventList)
+            {
+                INTERNAL_eventPlayed.Add(false);
+                INTERNAL_eventLoops.Add(evt, 0);
+            }
+        }
+
+        public void Resume()
+        {
+            if (IsPaused)
+            {
+                INTERNAL_timer.Start();
+                foreach (SoundEffectInstance sfi in INTERNAL_instancePool)
+                {
+                    sfi.Resume();
+                }
+            }
+        }
+
+        public void SetVariable(string name, float value)
+        {
+            if (String.IsNullOrEmpty(name))
+            {
+                throw new ArgumentNullException("name");
+            }
+            foreach (Variable curVar in INTERNAL_variables)
+            {
+                if (name.Equals(curVar.Name))
+                {
+                    curVar.SetValue(value);
+                    return;
+                }
+            }
+            throw new ArgumentException("Instance variable not found!");
+        }
+
+        public void Stop(AudioStopOptions options)
+        {
+            if (IsPlaying)
+            {
+                if (options == AudioStopOptions.AsAuthored &&
+                    INTERNAL_data.FadeOutMS > 0)
+                {
+                    INTERNAL_startFadeOut(INTERNAL_data.FadeOutMS);
+                    return;
+                }
+                INTERNAL_timer.Stop();
+                INTERNAL_timer.Reset();
+                foreach (SoundEffectInstance sfi in INTERNAL_instancePool)
+                {
+                    sfi.Stop();
+                    sfi.Dispose();
+                }
+                INTERNAL_instancePool.Clear();
+                INTERNAL_instanceVolumes.Clear();
+                INTERNAL_instancePitches.Clear();
+                INTERNAL_rpcTrackVolumes.Clear();
+                INTERNAL_rpcTrackPitches.Clear();
+                INTERNAL_userControlledPlaying = false;
+                INTERNAL_category.INTERNAL_removeActiveCue(this);
+
+                // If this is a managed Cue, we're done here.
+                if (INTERNAL_isManaged)
+                {
+                    Dispose();
+                }
+            }
+        }
+
+        #endregion
+
+        #region Internal Methods
+
+        internal bool INTERNAL_update()
+        {
+            // If we're not running, save some instructions...
+            if (!INTERNAL_timer.IsRunning)
+            {
+                return true;
+            }
+            elapsedFrames += 1;
+
+            // Play events when the timestamp has been hit.
+            for (int i = 0; i < INTERNAL_eventList.Count; i += 1)
+            {
+                if (!INTERNAL_eventPlayed[i] &&
+                    INTERNAL_timer.ElapsedMilliseconds > INTERNAL_eventList[i].Timestamp)
+                {
+                    uint type = INTERNAL_eventList[i].Type;
+                    if (type == 1)
+                    {
+                        PlayWave((PlayWaveEvent)INTERNAL_eventList[i]);
+                    }
+                    else if (type == 2)
+                    {
+                        eventVolume = ((SetVolumeEvent)INTERNAL_eventList[i]).GetVolume();
+                    }
+                    else if (type == 3)
+                    {
+                        eventPitch = ((SetPitchEvent)INTERNAL_eventList[i]).GetPitch();
+                    }
+                    else
+                    {
+                        throw new NotImplementedException("Unhandled XACTEvent type!");
+                    }
+                    INTERNAL_eventPlayed[i] = true;
+                }
+            }
+
+            // Clear out sound effect instances as they finish
+            for (int i = 0; i < INTERNAL_instancePool.Count; i += 1)
+            {
+                if (INTERNAL_instancePool[i].State == SoundState.Stopped)
+                {
+                    // Get the event that spawned this instance...
+                    PlayWaveEvent evt = (PlayWaveEvent)INTERNAL_waveEventSounds[INTERNAL_instancePool[i]];
+
+                    // Then delete all the guff
+                    INTERNAL_waveEventSounds.Remove(INTERNAL_instancePool[i]);
+                    INTERNAL_instancePool[i].Dispose();
+                    INTERNAL_instancePool.RemoveAt(i);
+                    INTERNAL_instanceVolumes.RemoveAt(i);
+                    INTERNAL_instancePitches.RemoveAt(i);
+                    INTERNAL_rpcTrackVolumes.RemoveAt(i);
+                    INTERNAL_rpcTrackPitches.RemoveAt(i);
+
+                    // Increment the loop counter, try to get another loop
+                    INTERNAL_eventLoops[evt] += 1;
+                    PlayWave(evt);
+
+                    // Removed a wave, have to step back...
+                    i -= 1;
+                }
+            }
+
+            // Fade in/out
+            float fadePerc = 1.0f;
+            if (INTERNAL_fadeMode != FadeMode.None)
+            {
+                if (INTERNAL_fadeMode == FadeMode.FadeOut)
+                {
+                    if (INTERNAL_category.crossfadeType == CrossfadeType.Linear)
+                    {
+                        fadePerc = (INTERNAL_fadeEnd - (INTERNAL_timer.ElapsedMilliseconds - INTERNAL_fadeStart)) / (float)INTERNAL_fadeEnd;
+                    }
+                    else
+                    {
+                        throw new NotImplementedException("Unhandled CrossfadeType!");
+                    }
+                    if (fadePerc <= 0.0f)
+                    {
+                        Stop(AudioStopOptions.Immediate);
+                        INTERNAL_fadeMode = FadeMode.None;
+                        return false;
+                    }
+                }
+                else
+                {
+                    if (INTERNAL_category.crossfadeType == CrossfadeType.Linear)
+                    {
+                        fadePerc = INTERNAL_timer.ElapsedMilliseconds / (float)INTERNAL_fadeEnd;
+                    }
+                    else
+                    {
+                        throw new NotImplementedException("Unhandled CrossfadeType!");
+                    }
+                    if (fadePerc > 1.0f)
+                    {
+                        fadePerc = 1.0f;
+                        INTERNAL_fadeMode = FadeMode.None;
+                    }
+                }
+            }
+
+            // User control updates
+            if (INTERNAL_data.IsUserControlled)
+            {
+                string varName = INTERNAL_data.UserControlVariable;
+                if (INTERNAL_userControlledPlaying &&
+                    (INTERNAL_baseEngine.INTERNAL_isGlobalVariable(varName) ?
+                        !WithinEpsilon(INTERNAL_controlledValue, INTERNAL_baseEngine.GetGlobalVariable(varName)) :
+                        !WithinEpsilon(INTERNAL_controlledValue, GetVariable(INTERNAL_data.UserControlVariable))))
+                {
+                    // TODO: Crossfading
+                    foreach (SoundEffectInstance sfi in INTERNAL_instancePool)
+                    {
+                        sfi.Stop();
+                        sfi.Dispose();
+                    }
+                    INTERNAL_instancePool.Clear();
+                    INTERNAL_instanceVolumes.Clear();
+                    INTERNAL_instancePitches.Clear();
+                    INTERNAL_rpcTrackVolumes.Clear();
+                    INTERNAL_rpcTrackPitches.Clear();
+                    if (!INTERNAL_calculateNextSound())
+                    {
+                        // Nothing to play, bail.
+                        return true;
+                    }
+                    INTERNAL_activeSound.GatherEvents(INTERNAL_eventList);
+                    foreach (XACTEvent evt in INTERNAL_eventList)
+                    {
+                        INTERNAL_eventPlayed.Add(false);
+                        INTERNAL_eventLoops.Add(evt, 0);
+                    }
+                    INTERNAL_timer.Stop();
+                    INTERNAL_timer.Reset();
+                    INTERNAL_timer.Start();
+                }
+
+                if (INTERNAL_activeSound == null)
+                {
+                    return INTERNAL_userControlledPlaying;
+                }
+            }
+
+            // If everything has been played and finished, we're done here.
+            if (INTERNAL_instancePool.Count == 0)
+            {
+                bool allPlayed = true;
+                foreach (bool played in INTERNAL_eventPlayed)
+                {
+                    if (!played)
+                    {
+                        allPlayed = false;
+                        break;
+                    }
+                }
+                if (allPlayed)
+                {
+                    // If this is managed, we're done completely.
+                    if (INTERNAL_isManaged)
+                    {
+                        Dispose();
+                    }
+                    else
+                    {
+                        INTERNAL_timer.Stop();
+                        INTERNAL_timer.Reset();
+                        INTERNAL_category.INTERNAL_removeActiveCue(this);
+                    }
+                    return INTERNAL_userControlledPlaying;
+                }
+            }
+
+            // RPC updates
+            float rpcVolume = 1.0f;
+            float rpcPitch = 0.0f;
+            float hfGain = 1.0f;
+            float lfGain = 1.0f;
+            for (int i = 0; i < INTERNAL_activeSound.RPCCodes.Count; i += 1)
+            {
+                float trackRpcVolume = 1.0f;
+                float trackRpcPitch = 0.0f;
+
+                foreach (uint curCode in INTERNAL_activeSound.RPCCodes[i])
+                {
+                    RPC curRPC = INTERNAL_baseEngine.INTERNAL_getRPC(curCode);
+                    float result;
+                    if (!INTERNAL_baseEngine.INTERNAL_isGlobalVariable(curRPC.Variable))
+                    {
+                        result = curRPC.CalculateRPC(GetVariable(curRPC.Variable));
+                    }
+                    else
+                    {
+                        // It's a global variable we're looking for!
+                        result = curRPC.CalculateRPC(
+                            INTERNAL_baseEngine.GetGlobalVariable(
+                                curRPC.Variable
+                            )
+                        );
+                    }
+                    if (curRPC.Parameter == RPCParameter.Volume)
+                    {
+                        float vol = XACTCalculator.CalculateAmplitudeRatio(result / 100.0);
+                        trackRpcVolume *= vol;
+                    }
+                    else if (curRPC.Parameter == RPCParameter.Pitch)
+                    {
+                        float pitch = result / 1200.0f;
+                        trackRpcPitch += pitch;
+                    }
+                    else if (curRPC.Parameter == RPCParameter.FilterFrequency)
+                    {
+                        // FIXME: Just listening to the last RPC!
+                        float hf = result / 20000.0f;
+                        float lf = 1.0f - hf;
+                        if (i == 0)
+                        {
+                            hfGain = hf;
+                            lfGain = lf;
+                        }
+                        else
+                        {
+                            throw new NotImplementedException("Per-track filter RPCs!");
+                        }
+                    }
+                    else
+                    {
+                        throw new NotImplementedException("RPC Parameter Type: " + curRPC.Parameter.ToString());
+                    }
+                }
+
+                if (i == 0)
+                {
+                    rpcVolume *= trackRpcVolume;
+                    rpcPitch += trackRpcPitch;
+                }
+                else
+                {
+                    foreach (var waveEventSoundPair in INTERNAL_waveEventSounds)
+                    {
+                        // apply to all sounds that have the track index
+                        if ((waveEventSoundPair.Value as PlayWaveEvent).INTERNAL_trackIndex == i-1)
+                        {
+                            int instanceIndex = INTERNAL_instancePool.IndexOf(waveEventSoundPair.Key);
+                            INTERNAL_rpcTrackVolumes[instanceIndex] = trackRpcVolume;
+                            INTERNAL_rpcTrackPitches[instanceIndex] = trackRpcPitch;
+                        }
+                    }
+                }
+            }
+
+            // Sound effect instance updates
+            for (int i = 0; i < INTERNAL_instancePool.Count; i += 1)
+            {
+                /* The final volume should be the combination of the
+				 * authored volume, category volume, RPC/Event volumes, and fade.
+				 */
+                INTERNAL_instancePool[i].Volume = (
+                    INTERNAL_instanceVolumes[i] *
+                    INTERNAL_category.INTERNAL_volume.Value *
+                    rpcVolume *
+                    INTERNAL_rpcTrackVolumes[i] *
+                    eventVolume *
+                    fadePerc
+                );
+
+                /* The final pitch should be the combination of the
+				 * authored pitch and RPC/Event pitch results.
+				 */
+                INTERNAL_instancePool[i].Pitch = MathHelper.Clamp(
+                    INTERNAL_instancePitches[i] +
+                    rpcPitch +
+                    eventPitch +
+                    INTERNAL_rpcTrackPitches[i], -1, 1
+                );
+
+     //           /* The final filter is determined by the instance's filter type,
+				 //* in addition to our calculation of the HF/LF gain values.
+				 //*/
+     //           byte fType = INTERNAL_instancePool[i].FilterType;
+     //           if (fType == 0xFF)
+     //           {
+     //               // No-op, no filter!
+     //           }
+     //           else if (fType == 0)
+     //           {
+     //               INTERNAL_instancePool[i].INTERNAL_applyLowPassFilter(hfGain);
+     //           }
+     //           else if (fType == 1)
+     //           {
+     //               INTERNAL_instancePool[i].INTERNAL_applyHighPassFilter(lfGain);
+     //           }
+     //           else if (fType == 2)
+     //           {
+     //               INTERNAL_instancePool[i].INTERNAL_applyBandPassFilter(hfGain, lfGain);
+     //           }
+     //           else
+     //           {
+     //               throw new InvalidOperationException("Unhandled filter type!");
+     //           }
+
+                // Update 3D position, if applicable
+                if (INTERNAL_isPositional)
+                {
+                    INTERNAL_instancePool[i].Apply3D(
+                        INTERNAL_listener,
+                        INTERNAL_emitter
+                    );
+                }
+            }
+
+            return true;
+        }
+
+        internal void INTERNAL_genVariables(List<Variable> cueVariables)
+        {
+            INTERNAL_variables = cueVariables;
+        }
+
+        internal float INTERNAL_calculateVolume()
+        {
+            float retval = 1.0f;
+            for (int i = 0; i < INTERNAL_activeSound.RPCCodes.Count; i += 1)
+                foreach (uint curCode in INTERNAL_activeSound.RPCCodes[i])
+                {
+                    RPC curRPC = INTERNAL_baseEngine.INTERNAL_getRPC(curCode);
+                    if (curRPC.Parameter != RPCParameter.Volume)
+                    {
+                        continue;
+                    }
+                    float result;
+                    if (!INTERNAL_baseEngine.INTERNAL_isGlobalVariable(curRPC.Variable))
+                    {
+                        result = curRPC.CalculateRPC(GetVariable(curRPC.Variable));
+                    }
+                    else
+                    {
+                        // It's a global variable we're looking for!
+                        result = curRPC.CalculateRPC(
+                            INTERNAL_baseEngine.GetGlobalVariable(
+                                curRPC.Variable
+                            )
+                        );
+                    }
+                    retval *= XACTCalculator.CalculateAmplitudeRatio(result / 100.0);
+                }
+            return retval;
+        }
+
+        internal void INTERNAL_startFadeIn(ushort ms)
+        {
+            // start is not used, since it's always 0 anyway -flibit
+            INTERNAL_fadeEnd = ms;
+            INTERNAL_fadeMode = FadeMode.FadeIn;
+        }
+
+        internal void INTERNAL_startFadeOut(ushort ms)
+        {
+            INTERNAL_fadeStart = INTERNAL_timer.ElapsedMilliseconds;
+            INTERNAL_fadeEnd = ms;
+            INTERNAL_fadeMode = FadeMode.FadeOut;
+        }
+
+        #endregion
+
+        #region Private Methods
+
+        private bool INTERNAL_calculateNextSound()
+        {
+            INTERNAL_activeSound = null;
+            INTERNAL_eventList.Clear();
+            INTERNAL_eventPlayed.Clear();
+            INTERNAL_eventLoops.Clear();
+            INTERNAL_waveEventSounds.Clear();
+
+            // Pick a sound based on a Cue instance variable
+            if (INTERNAL_data.IsUserControlled)
+            {
+                INTERNAL_userControlledPlaying = true;
+                if (INTERNAL_baseEngine.INTERNAL_isGlobalVariable(INTERNAL_data.UserControlVariable))
+                {
+                    INTERNAL_controlledValue = INTERNAL_baseEngine.GetGlobalVariable(
+                        INTERNAL_data.UserControlVariable
+                    );
+                }
+                else
+                {
+                    INTERNAL_controlledValue = GetVariable(
+                        INTERNAL_data.UserControlVariable
+                    );
+                }
+                for (int i = 0; i < INTERNAL_data.Probabilities.Length / 2; i += 1)
+                {
+                    if (INTERNAL_controlledValue <= INTERNAL_data.Probabilities[i, 0] &&
+                        INTERNAL_controlledValue >= INTERNAL_data.Probabilities[i, 1])
+                    {
+                        INTERNAL_activeSound = INTERNAL_data.Sounds[i];
+                        return true;
+                    }
+                }
+
+                /* This should only happen when the
+				 * UserControlVariable is none of the sound
+				 * probabilities, in which case we are just
+				 * silent. But, we are still claiming to be
+				 * "playing" in the meantime.
+				 * -flibit
+				 */
+                return false;
+            }
+
+            // Randomly pick a sound
+            double max = 0.0;
+            for (int i = 0; i < INTERNAL_data.Probabilities.GetLength(0); i += 1)
+            {
+                max += INTERNAL_data.Probabilities[i, 0] - INTERNAL_data.Probabilities[i, 1];
+            }
+            double next = random.NextDouble() * max;
+
+            for (int i = INTERNAL_data.Probabilities.GetLength(0) - 1; i >= 0; i -= 1)
+            {
+                if (next > max - (INTERNAL_data.Probabilities[i, 0] - INTERNAL_data.Probabilities[i, 1]))
+                {
+                    INTERNAL_activeSound = INTERNAL_data.Sounds[i];
+                    break;
+                }
+                max -= INTERNAL_data.Probabilities[i, 0] - INTERNAL_data.Probabilities[i, 1];
+            }
+
+            return true;
+        }
+
+        private void PlayWave(PlayWaveEvent evt)
+        {
+            SoundEffectInstance sfi = evt.GenerateInstance(
+                INTERNAL_activeSound.Volume,
+                INTERNAL_activeSound.Pitch,
+                INTERNAL_eventLoops[evt]
+            );
+            if (sfi != null)
+            {
+                if (INTERNAL_isPositional)
+                {
+                    sfi.Apply3D(INTERNAL_listener, INTERNAL_emitter);
+                }
+                //foreach (uint curDSP in INTERNAL_activeSound.DSPCodes)
+                //{
+                //    // FIXME: This only applies the last DSP!
+                //    sfi.INTERNAL_applyReverb(
+                //        INTERNAL_baseEngine.INTERNAL_getDSP(curDSP)
+                //    );
+                //}
+                INTERNAL_instancePool.Add(sfi);
+                INTERNAL_instanceVolumes.Add(sfi.Volume);
+                INTERNAL_instancePitches.Add(sfi.Pitch);
+                INTERNAL_waveEventSounds.Add(sfi, evt);
+                INTERNAL_rpcTrackVolumes.Add(1.0f);
+                INTERNAL_rpcTrackPitches.Add(0.0f);
+                sfi.Play();
+            }
+        }
+
+        internal static readonly float MachineEpsilonFloat = GetMachineEpsilonFloat();
+
+        internal static bool WithinEpsilon(float floatA, float floatB)
+        {
+            return Math.Abs(floatA - floatB) < MachineEpsilonFloat;
+        }
+
         /// <summary>
-        /// Sets the value of a cue-instance variable based on its friendly name.
+        /// Find the current machine's Epsilon for the float data type.
+        /// (That is, the largest float, e,  where e == 0.0f is true.)
         /// </summary>
-        /// <param name="name">Friendly name of the variable to set.</param>
-        /// <param name="value">Value to assign to the variable.</param>
-        /// <remarks>The friendly name is a value set from the designer.</remarks>
-		public void SetVariable (string name, float value)
-		{
-			if (name == "Volume") 
-            {
-				_volume = value;
-				if (_curSound != null)
-                    _curSound.SetCueVolume(_volume);
-			} 
-            else
-            {
-				_engine.SetGlobalVariable (name, value);
-			}
-		}
-
-        /// <summary>Gets a cue-instance variable value based on its friendly name.</summary>
-        /// <param name="name">Friendly name of the variable.</param>
-        /// <returns>Value of the variable.</returns>
-        /// <remarks>
-        /// <para>Cue-instance variables are useful when multiple instantiations of a single cue (and its associated sounds) are required (for example, a "car" cue where there may be more than one car at any given time). While a global variable allows multiple audio elements to be controlled in unison, a cue instance variable grants discrete control of each instance of a cue, even for each copy of the same cue.</para>
-        /// <para>The friendly name is a value set from the designer.</para>
-        /// </remarks>
-		public float GetVariable (string name)
-		{
-			if (name == "Volume")
-				return _volume;
-
-            return _engine.GetGlobalVariable (name);
-		}
-
-        /// <summary>Updates the simulated 3D Audio settings calculated between an AudioEmitter and AudioListener.</summary>
-        /// <param name="listener">The listener to calculate.</param>
-        /// <param name="emitter">The emitter to calculate.</param>
-        /// <remarks>
-        /// <para>This must be called before Play().</para>
-        /// <para>Calling this method automatically converts the sound to monoaural and sets the speaker mix for any sound played by this cue to a value calculated with the listener's and emitter's positions. Any stereo information in the sound will be discarded.</para>
-        /// </remarks>
-		public void Apply3D(AudioListener listener, AudioEmitter emitter) 
+        private static float GetMachineEpsilonFloat()
         {
-            if (_curSound != null)
-                _curSound.Apply3D(listener, emitter);			
+            float machineEpsilon = 1.0f;
+            float comparison;
+
+            /* Keep halving the working value of machineEpsilon until we get a number that
+			 * when added to 1.0f will still evaluate as equal to 1.0f.
+			 */
+            do
+            {
+                machineEpsilon *= 0.5f;
+                comparison = 1.0f + machineEpsilon;
+            }
+            while (comparison > 1.0f);
+
+            return machineEpsilon;
         }
 
-        internal void Update(float dt)
-        {
-            if (_curSound != null)
-                _curSound.Update(dt);
-        }
-		
-		
-		/// <summary>Indicateds whether or not the object has been disposed.</summary>
-		public bool IsDisposed { get { return false; } }
-		
-		#region IDisposable implementation
-        /// <summary>Immediately releases any unmanaged resources used by this object.</summary>
-		public void Dispose ()
-		{
-		}
-		#endregion
-	}
+        #endregion
+    }
 }
-

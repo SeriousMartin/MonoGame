@@ -1,216 +1,335 @@
-// MonoGame - Copyright (C) The MonoGame Team
-// This file is subject to the terms and conditions defined in
-// file 'LICENSE.txt', which is part of this source code package.
+#region License
+/* FNA - XNA4 Reimplementation for Desktop Platforms
+ * Copyright 2009-2016 Ethan Lee and the MonoGame Team
+ *
+ * Released under the Microsoft Public License.
+ * See LICENSE for details.
+ */
+#endregion
 
+#region Using Statements
 using System;
-using System.Diagnostics;
-using System.IO;
 using System.Collections.Generic;
+using System.Diagnostics;
+#endregion
 
 namespace Microsoft.Xna.Framework.Audio
 {
-    /// <summary>
-    /// Provides functionality for manipulating multiple sounds at a time.
-    /// </summary>
-	public struct AudioCategory : IEquatable<AudioCategory>
-	{
-		string name;
-		AudioEngine engine;
+    // http://msdn.microsoft.com/en-us/library/microsoft.xna.framework.audio.audiocategory.aspx
+    public struct AudioCategory : IEquatable<AudioCategory>
+    {
+        #region Internal Primitive Type Container Class
 
-        // Thisis a bit gross, but we use an array here
-        // instead of a field since AudioCategory is a struct
-        // This allows us to save _volume when the user
-        // holds onto a reference of AudioCategory, or when a cue
-        // is created/loaded after the volume's already been set.
-		internal float[] _volume;
-		internal bool isBackgroundMusic;
-		internal bool isPublic;
-
-		internal bool instanceLimit;
-		internal int maxInstances;
-
-		List<XactSound> sounds;
-
-		//insatnce limiting behaviour
-		internal enum MaxInstanceBehaviour {
-			FailToPlay,
-			Queue,
-			ReplaceOldest,
-			ReplaceQuietest,
-			ReplaceLowestPriority,
-		}
-		internal MaxInstanceBehaviour instanceBehaviour;
-
-		internal enum CrossfadeType {
-			Linear,
-			Logarithmic,
-			EqualPower,
-		}
-		internal CrossfadeType fadeType;
-		internal float fadeIn;
-		internal float fadeOut;
-
-		
-		internal AudioCategory (AudioEngine audioengine, string name, BinaryReader reader)
-		{
-		    Debug.Assert(audioengine != null);
-            Debug.Assert(!string.IsNullOrEmpty(name));
-
-			this.sounds = new List<XactSound>();
-			this.name = name;
-			engine = audioengine;
-
-			maxInstances = reader.ReadByte ();
-			instanceLimit = maxInstances != 0xff;
-
-			fadeIn = (reader.ReadUInt16 () / 1000f);
-			fadeOut = (reader.ReadUInt16 () / 1000f);
-
-			byte instanceFlags = reader.ReadByte ();
-			fadeType = (CrossfadeType)(instanceFlags & 0x7);
-			instanceBehaviour = (MaxInstanceBehaviour)(instanceFlags >> 3);
-
-			reader.ReadUInt16 (); //unkn
-
-            var volume = XactHelpers.ParseVolumeFromDecibels(reader.ReadByte());
-            _volume = new float[1] { volume };
-
-			byte visibilityFlags = reader.ReadByte ();
-			isBackgroundMusic = (visibilityFlags & 0x1) != 0;
-			isPublic = (visibilityFlags & 0x2) != 0;
-		}
-
-		internal void AddSound(XactSound sound)
-		{
-			sounds.Add(sound);
-		}
-
-        internal int GetPlayingInstanceCount()
+        internal class PrimitiveInstance<T>
         {
-            var sum = 0;
-            for (var i = 0; i < sounds.Count; i++)
+            public T Value;
+            public PrimitiveInstance(T initial)
             {
-                if (sounds[i].Playing)
-                    sum++;
+                Value = initial;
             }
-            return sum;
         }
 
-        internal XactSound GetOldestInstance()
+        #endregion
+
+        #region Public Properties
+
+        private string INTERNAL_name;
+        public string Name
         {
-            for (var i = 0; i < sounds.Count; i++)
+            get
             {
-                if (sounds[i].Playing)
-                    return sounds[i];
+                return INTERNAL_name;
             }
-            return null;
         }
 
-        /// <summary>
-        /// Gets the category's friendly name.
-        /// </summary>
-		public string Name { get { return name; } }
+        #endregion
 
-        /// <summary>
-        /// Pauses all associated sounds.
-        /// </summary>
-		public void Pause ()
-		{
-			foreach (var sound in sounds)
-				sound.Pause();
-		}
+        #region Internal Variables
 
-        /// <summary>
-        /// Resumes all associated paused sounds.
-        /// </summary>
-		public void Resume ()
-		{
-			foreach (var sound in sounds)
-				sound.Resume();
-		}
+        // Grumble, struct returns...
+        internal PrimitiveInstance<float> INTERNAL_volume;
 
-        /// <summary>
-        /// Stops all associated sounds.
-        /// </summary>
+        internal CrossfadeType crossfadeType;
+
+        #endregion
+
+        #region Private Variables
+
+        private List<Cue> activeCues;
+
+        private Dictionary<string, List<Cue>> cueInstanceCounts;
+
+        private byte maxCueInstances;
+        private MaxInstanceBehavior maxCueBehavior;
+        private ushort maxFadeInMS;
+        private ushort maxFadeOutMS;
+
+        #endregion
+
+        #region Internal Constructor
+
+        internal AudioCategory(
+            string name,
+            float volume,
+            byte maxInstances,
+            int maxBehavior,
+            ushort fadeInMS,
+            ushort fadeOutMS,
+            int fadeType
+        )
+        {
+            INTERNAL_name = name;
+            INTERNAL_volume = new PrimitiveInstance<float>(volume);
+            activeCues = new List<Cue>();
+            cueInstanceCounts = new Dictionary<string, List<Cue>>();
+
+            maxCueInstances = maxInstances;
+            maxCueBehavior = (MaxInstanceBehavior)maxBehavior;
+            maxFadeInMS = fadeInMS;
+            maxFadeOutMS = fadeOutMS;
+            crossfadeType = (CrossfadeType)fadeType;
+        }
+
+        #endregion
+
+        #region Public Methods
+
+        public void Pause()
+        {
+            lock (activeCues)
+            {
+                foreach (Cue curCue in activeCues)
+                {
+                    curCue.Pause();
+                }
+            }
+        }
+
+        public void Resume()
+        {
+            lock (activeCues)
+            {
+                foreach (Cue curCue in activeCues)
+                {
+                    curCue.Resume();
+                }
+            }
+        }
+
+        public void SetVolume(float volume)
+        {
+            lock (activeCues)
+            {
+                INTERNAL_volume.Value = volume;
+            }
+        }
+
         public void Stop(AudioStopOptions options)
-		{
-			foreach (var sound in sounds)
-                sound.Stop(options);
-		}
-
-		public void SetVolume(float volume)
         {
-            _volume[0] = volume;
-
-			foreach (var sound in sounds)
-				sound.UpdateCategoryVolume(volume);
-		}
-
-        /// <summary>
-        /// Determines whether two AudioCategory instances are equal.
-        /// </summary>
-        /// <param name="first">First AudioCategory instance to compare.</param>
-        /// <param name="second">Second AudioCategory instance to compare.</param>
-        /// <returns>true if the objects are equal or false if they aren't.</returns>
-        public static bool operator ==(AudioCategory first, AudioCategory second)
-        {
-            return first.engine == second.engine && first.name.Equals(second.name, StringComparison.Ordinal);
+            lock (activeCues)
+            {
+                while (activeCues.Count > 0)
+                {
+                    Cue curCue = activeCues[0];
+                    curCue.Stop(options);
+                }
+                activeCues.Clear();
+                foreach (List<Cue> count in cueInstanceCounts.Values)
+                {
+                    count.Clear();
+                }
+            }
         }
 
-        /// <summary>
-        /// Determines whether two AudioCategory instances are not equal.
-        /// </summary>
-        /// <param name="first">First AudioCategory instance to compare.</param>
-        /// <param name="second">Second AudioCategory instance to compare.</param>
-        /// <returns>true if the objects are not equal or false if they are.</returns>
-        public static bool operator !=(AudioCategory first, AudioCategory second)
-	    {
-            return first.engine != second.engine || !first.name.Equals(second.name, StringComparison.Ordinal);
-	    }
+        public override int GetHashCode()
+        {
+            return Name.GetHashCode();
+        }
 
-        /// <summary>
-        /// Determines whether two AudioCategory instances are equal.
-        /// </summary>
-        /// <param name="other">AudioCategory to compare with this instance.</param>
-        /// <returns>true if the objects are equal or false if they aren't</returns>
-	    public bool Equals(AudioCategory other)
-		{
-            return engine == other.engine && name.Equals(other.name, StringComparison.Ordinal);
-		}
+        public bool Equals(AudioCategory other)
+        {
+            return (GetHashCode() == other.GetHashCode());
+        }
 
-        /// <summary>
-        /// Determines whether two AudioCategory instances are equal.
-        /// </summary>
-        /// <param name="obj">Object to compare with this instance.</param>
-        /// <returns>true if the objects are equal or false if they aren't.</returns>
-        public override bool Equals(object obj)
+        public override bool Equals(Object obj)
         {
             if (obj is AudioCategory)
             {
-                var other = (AudioCategory)obj;
-                return engine == other.engine && name.Equals(other.name, StringComparison.Ordinal);
+                return Equals((AudioCategory)obj);
             }
-
             return false;
         }
 
-        /// <summary>
-        /// Gets the hash code for this instance.
-        /// </summary>
-        /// <returns>Hash code for this object.</returns>
-        public override int GetHashCode()
+        public static bool operator ==(
+            AudioCategory value1,
+            AudioCategory value2
+        )
         {
-            return name.GetHashCode() ^ engine.GetHashCode();
+            return value1.Equals(value2);
         }
 
-        /// <summary>
-        /// Returns the name of this AudioCategory
-        /// </summary>
-        /// <returns>Friendly name of the AudioCategory</returns>
-        public override string ToString()
+        public static bool operator !=(
+            AudioCategory value1,
+            AudioCategory value2
+        )
         {
-            return name;
+            return !(value1.Equals(value2));
         }
-	}
+
+        #endregion
+
+        #region Internal Methods
+
+        internal void INTERNAL_update()
+        {
+            /* Believe it or not, someone might run the update on a thread.
+			 * So, we're going to give a lock to this method.
+			 * -flibit
+			 */
+            lock (activeCues)
+            {
+                for (int i = 0; i < activeCues.Count; i += 1)
+                {
+                    if (!activeCues[i].INTERNAL_update())
+                    {
+                        i -= 1;
+                    }
+                }
+            }
+        }
+
+        internal bool INTERNAL_addCue(Cue newCue)
+        {
+            lock (activeCues)
+            {
+                if (activeCues.Count >= maxCueInstances)
+                {
+                    if (maxCueBehavior == MaxInstanceBehavior.Fail)
+                    {
+                        return false; // Just ignore us...
+                    }
+                    else if (maxCueBehavior == MaxInstanceBehavior.Queue)
+                    {
+                        newCue.INTERNAL_startFadeIn(maxFadeInMS);
+                        activeCues[0].INTERNAL_startFadeOut(maxFadeOutMS);
+                    }
+                    else if (maxCueBehavior == MaxInstanceBehavior.ReplaceOldest)
+                    {
+                        if (!INTERNAL_removeOldestCue(activeCues[0].Name))
+                        {
+                            return false; // Just ignore us...
+                        }
+                    }
+                    else if (maxCueBehavior == MaxInstanceBehavior.ReplaceQuietest)
+                    {
+                        float lowestVolume = float.MaxValue;
+                        int lowestIndex = -1;
+                        for (int i = 0; i < activeCues.Count; i += 1)
+                        {
+                            if (!activeCues[i].JustStarted)
+                            {
+                                float vol = activeCues[i].INTERNAL_calculateVolume();
+                                if (vol < lowestVolume)
+                                {
+                                    lowestVolume = vol;
+                                    lowestIndex = i;
+                                }
+                            }
+                        }
+                        if (lowestIndex > -1)
+                        {
+                            activeCues[lowestIndex].Stop(AudioStopOptions.AsAuthored);
+                        }
+                        else
+                        {
+                            return false; // Just ignore us...
+                        }
+                    }
+                    else if (maxCueBehavior == MaxInstanceBehavior.ReplaceLowestPriority)
+                    {
+                        // FIXME: Priority?
+                        if (!INTERNAL_removeOldestCue(activeCues[0].Name))
+                        {
+                            return false; // Just ignore us...
+                        }
+                    }
+                }
+                cueInstanceCounts[newCue.Name].Add(newCue);
+                activeCues.Add(newCue);
+            }
+            return true;
+        }
+
+        internal bool INTERNAL_removeOldestCue(string name)
+        {
+            lock (activeCues)
+            {
+                for (int i = 0; i < activeCues.Count; i += 1)
+                {
+                    if (activeCues[i].Name.Equals(name) && !activeCues[i].JustStarted)
+                    {
+                        activeCues[i].Stop(AudioStopOptions.AsAuthored);
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+
+        internal bool INTERNAL_removeQuietestCue(string name)
+        {
+            float lowestVolume = float.MaxValue;
+            int lowestIndex = -1;
+
+            lock (activeCues)
+            {
+                for (int i = 0; i < activeCues.Count; i += 1)
+                {
+                    if (activeCues[i].Name.Equals(name) && !activeCues[i].JustStarted)
+                    {
+                        float vol = activeCues[i].INTERNAL_calculateVolume();
+                        if (vol < lowestVolume)
+                        {
+                            lowestVolume = vol;
+                            lowestIndex = i;
+                        }
+                    }
+                }
+
+                if (lowestIndex > -1)
+                {
+                    activeCues[lowestIndex].Stop(AudioStopOptions.AsAuthored);
+                    return true;
+                }
+                return false;
+            }
+        }
+
+        internal void INTERNAL_removeActiveCue(Cue cue)
+        {
+            // FIXME: Avoid calling this when a Cue is GC'd! -flibit
+            if (activeCues != null)
+            {
+                lock (activeCues)
+                {
+                    if (activeCues.Contains(cue))
+                    {
+                        activeCues.Remove(cue);
+                        cueInstanceCounts[cue.Name].Remove(cue);
+                    }
+                }
+            }
+        }
+
+        internal int INTERNAL_cueInstanceCount(string name)
+        {
+            if (!cueInstanceCounts.ContainsKey(name))
+            {
+                cueInstanceCounts.Add(name, new List<Cue>());
+            }
+            return cueInstanceCounts[name].Count;
+        }
+
+        #endregion
+    }
 }
-
