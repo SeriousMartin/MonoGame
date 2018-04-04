@@ -5,17 +5,16 @@
 using System;
 using Microsoft.Xna.Framework.Audio;
 
-
 namespace Microsoft.Xna.Framework.Content
 {
-	internal class SoundEffectReader : ContentTypeReader<SoundEffect>
-	{
-		protected internal override SoundEffect Read(ContentReader input, SoundEffect existingInstance)
-		{         
+    internal class SoundEffectReader : ContentTypeReader<SoundEffect>
+    {
+        protected internal override SoundEffect Read(ContentReader input, SoundEffect existingInstance)
+        {
             // XNB format for SoundEffect...
-            //            
+            //
             // Byte [format size]	Format	WAVEFORMATEX structure
-            // UInt32	Data size	
+            // UInt32	Data size
             // Byte [data size]	Data	Audio waveform data
             // Int32	Loop start	In bytes (start must be format block aligned)
             // Int32	Loop length	In bytes (length must be format block aligned)
@@ -35,7 +34,7 @@ namespace Microsoft.Xna.Framework.Content
             // We let the sound effect deal with parsing this based
             // on what format the audio data actually is.
 
-		    var headerSize = input.ReadInt32();
+            var headerSize = input.ReadInt32();
             var header = input.ReadBytes(headerSize);
 
             // Read the audio data buffer.
@@ -47,6 +46,9 @@ namespace Microsoft.Xna.Framework.Content
             var loopLength = input.ReadInt32();
             var durationMs = input.ReadInt32();
 
+            loopStart = 0;
+            loopLength = 0;
+
             // Create the effect.
             var effect = new SoundEffect(header, data, dataSize, durationMs, loopStart, loopLength);
 
@@ -55,5 +57,5 @@ namespace Microsoft.Xna.Framework.Content
 
             return effect;
         }
-	}
+    }
 }

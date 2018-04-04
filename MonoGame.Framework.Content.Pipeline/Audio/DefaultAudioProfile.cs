@@ -7,14 +7,13 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 
-
 namespace Microsoft.Xna.Framework.Content.Pipeline.Audio
 {
     internal class DefaultAudioProfile : AudioProfile
     {
         public override bool Supports(TargetPlatform platform)
         {
-            return  platform == TargetPlatform.Android ||
+            return platform == TargetPlatform.Android ||
                     platform == TargetPlatform.DesktopGL ||
                     platform == TargetPlatform.MacOSX ||
                     platform == TargetPlatform.NativeClient ||
@@ -45,11 +44,10 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Audio
             // Most platforms will use AAC ("mp4") by default
             var targetFormat = ConversionFormat.Aac;
 
-            if (    platform == TargetPlatform.Windows ||
+            if (platform == TargetPlatform.Windows ||
                     platform == TargetPlatform.WindowsPhone8 ||
                     platform == TargetPlatform.WindowsStoreApp)
                 targetFormat = ConversionFormat.WindowsMedia;
-
             else if (platform == TargetPlatform.DesktopGL)
                 targetFormat = ConversionFormat.Vorbis;
 
@@ -87,9 +85,9 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Audio
             try
             {
                 var numberFormat = CultureInfo.InvariantCulture.NumberFormat;
-                foreach (var line in ffprobeStdout.Split(new[] {'\r', '\n', '\0'}, StringSplitOptions.RemoveEmptyEntries))
+                foreach (var line in ffprobeStdout.Split(new[] { '\r', '\n', '\0' }, StringSplitOptions.RemoveEmptyEntries))
                 {
-                    var kv = line.Split(new[] {'='}, 2);
+                    var kv = line.Split(new[] { '=' }, 2);
 
                     switch (kv[0])
                     {
@@ -100,12 +98,12 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Audio
                             bitsPerSample = int.Parse(kv[1].Trim('"'), numberFormat);
                             break;
                         case "streams.stream.0.start_time":
-                        {
-                            double seconds;
-                            if (double.TryParse(kv[1].Trim('"'), NumberStyles.Any, numberFormat, out seconds))
-                                durationInSeconds += seconds;
-                            break;
-                        }
+                            {
+                                double seconds;
+                                if (double.TryParse(kv[1].Trim('"'), NumberStyles.Any, numberFormat, out seconds))
+                                    durationInSeconds += seconds;
+                                break;
+                            }
                         case "streams.stream.0.duration":
                             durationInSeconds += double.Parse(kv[1].Trim('"'), numberFormat);
                             break;
@@ -116,17 +114,17 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Audio
                             sampleFormat = kv[1].Trim('"').ToLowerInvariant();
                             break;
                         case "streams.stream.0.bit_rate":
-                            averageBytesPerSecond = (int.Parse(kv[1].Trim('"'), numberFormat)/8);
+                            averageBytesPerSecond = (int.Parse(kv[1].Trim('"'), numberFormat) / 8);
                             break;
                         case "format.format_name":
                             formatName = kv[1].Trim('"').ToLowerInvariant();
                             break;
                         case "streams.stream.0.codec_tag":
-                        {
-                            var hex = kv[1].Substring(3, kv[1].Length - 4);
-                            format = int.Parse(hex, NumberStyles.HexNumber);
-                            break;
-                        }
+                            {
+                                var hex = kv[1].Substring(3, kv[1].Length - 4);
+                                format = int.Parse(hex, NumberStyles.HexNumber);
+                                break;
+                            }
                     }
                 }
             }
@@ -190,10 +188,10 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Audio
                 bitsPerSample = Math.Min(bitsPerSample, 16);
             }
             else
-                audioFileType = (AudioFileType) (-1);
+                audioFileType = (AudioFileType)(-1);
 
-            // XNA seems to calculate the block alignment directly from 
-            // the bits per sample and channel count regardless of the 
+            // XNA seems to calculate the block alignment directly from
+            // the bits per sample and channel count regardless of the
             // format of the audio data.
             // ffprobe doesn't report blockAlign for ADPCM and we cannot calculate it like this
             if (bitsPerSample > 0 && (format != 2 && format != 17))
@@ -290,7 +288,7 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Audio
                 out ffmpegStdout,
                 out ffmpegStderr);
             if (ffmpegExitCode != 0)
-                throw new InvalidOperationException("ffmpeg exited with non-zero exit code: \n" + ffmpegStdout + "\n" + ffmpegStderr);          
+                throw new InvalidOperationException("ffmpeg exited with non-zero exit code: \n" + ffmpegStdout + "\n" + ffmpegStderr);
         }
 
         public static ConversionQuality ConvertToFormat(AudioContent content, ConversionFormat formatType, ConversionQuality quality, string saveToFile)
@@ -303,8 +301,15 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Audio
                 switch (formatType)
                 {
                     case ConversionFormat.Adpcm:
-                        // ADPCM Microsoft 
-                        ffmpegCodecName = "adpcm_ms";
+                        // ADPCM Microsoft
+                        //ffmpegCodecName = "adpcm_ms";
+                        if (content.Format.BitsPerSample == 8)
+                            ffmpegCodecName = "pcm_u8";
+                        // AdpcmEncode does not work with this format although 32 bit float should be acceptable
+                        //else if (content.Format.BitsPerSample == 32 && content.Format.Format == 3)
+                        //    ffmpegCodecName = "pcm_f32le";
+                        else
+                            ffmpegCodecName = "pcm_s16le";
                         ffmpegMuxerName = "wav";
                         //format = 0x0002; /* WAVE_FORMAT_ADPCM */
                         break;
@@ -369,6 +374,7 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Audio
                             temporaryOutput),
                         out ffmpegStdout,
                         out ffmpegStderr);
+
                     if (ffmpegExitCode != 0)
                         quality--;
                 } while (quality >= 0 && ffmpegExitCode != 0);
@@ -376,6 +382,26 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Audio
                 if (ffmpegExitCode != 0)
                 {
                     throw new InvalidOperationException("ffmpeg exited with non-zero exit code: \n" + ffmpegStdout + "\n" + ffmpegStderr);
+                }
+
+                if (formatType == ConversionFormat.Adpcm)
+                {
+                    string temporaryInput = temporaryOutput;
+                    temporaryOutput = Path.GetTempFileName();
+
+                    ffmpegExitCode = ExternalTool.Run(
+                        "AdpcmEncode",
+                        string.Format(
+                            "\"{0}\" \"{1}\"",
+                            temporaryInput,
+                            temporaryOutput),
+                        out ffmpegStdout,
+                        out ffmpegStderr);
+
+                    if (ffmpegExitCode != 0)
+                    {
+                        throw new InvalidOperationException("AdpcmEncode exited with non-zero exit code: \n" + ffmpegStdout + "\n" + ffmpegStderr);
+                    }
                 }
 
                 byte[] rawData;
@@ -427,7 +453,7 @@ namespace Microsoft.Xna.Framework.Content.Pipeline.Audio
 
         // Converts block alignment in bytes to sample alignment, primarily for compressed formats
         // Calculation of sample alignment from http://kcat.strangesoft.net/openal-extensions/SOFT_block_alignment.txt
-        static int SampleAlignment(AudioFormat format)
+        private static int SampleAlignment(AudioFormat format)
         {
             switch (format.Format)
             {

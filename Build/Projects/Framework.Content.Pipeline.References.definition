@@ -107,6 +107,7 @@
       Name="ATI.TextureConverter"
       Path="ThirdParty\Dependencies\ATI.TextureConverter\ATI.TextureConverter.dll" />
     <NativeBinary Path="ThirdParty\Dependencies\NVTT\Windows\x64\nvtt.dll" />
+    <NativeBinary Path="ThirdParty\Dependencies\AdpcmEncode\AdpcmEncode.exe" />
     <NativeBinary Path="ThirdParty\Dependencies\assimp\Assimp64.dll" />
     <NativeBinary Path="ThirdParty\Dependencies\MojoShader\Windows\libmojoshader_64.dll" />
     <NativeBinary Path="ThirdParty\Dependencies\SharpFont\Windows\x64\freetype6.dll" />
